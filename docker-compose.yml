@@ -1,0 +1,17 @@
+# Roxy 代理服务 docker-compose.yml
+services:
+  roxy:
+  
+    image: ghcr.io/0xcathiefish/roxy:latest
+    container_name: roxy
+    restart: unless-stopped
+    
+    env_file:
+      - .env
+
+    networks:
+      - cycle
+
+networks:
+  cycle:
+    external: true

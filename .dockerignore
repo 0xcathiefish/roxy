@@ -1,0 +1,10 @@
+# .dockerignore
+target/
+.git/
+.gitignore
+*.log
+.DS_Store
+Dockerfile
+.dockerignore
+.github/
+docker-compose.yml

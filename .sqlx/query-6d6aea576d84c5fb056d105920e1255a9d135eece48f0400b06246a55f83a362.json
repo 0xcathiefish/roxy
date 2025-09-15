@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT \n                COALESCE(url, '') as \"url!\",\n                COALESCE(ip, '') as \"ip!\",\n                COALESCE(isp, '') as \"isp!\",\n                COALESCE(country, '') as \"country!\",\n                latency as \"latency!\",\n                COALESCE(code, '') as \"code!\"\n            FROM proxies \n            WHERE latency > 0 AND latency < $1 AND latency IS NOT NULL\n            AND url IS NOT NULL \n            AND ip IS NOT NULL \n            ORDER BY latency ASC\n            LIMIT 1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "url!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "ip!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "isp!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "country!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "latency!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "code!",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      true,
+      null
+    ]
+  },
+  "hash": "6d6aea576d84c5fb056d105920e1255a9d135eece48f0400b06246a55f83a362"
+}
