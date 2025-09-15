@@ -4,6 +4,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use dotenvy::dotenv;
+use tokio::time::Sleep;
 use std::env;
 use std::sync::Arc;
 
@@ -28,6 +29,7 @@ async fn main() {
         tokio::spawn(get_proxy(port,db_pool));
     }
 
+    tokio::time::sleep(std::time::Duration::from_secs(200)).await;
 }
 
 
