@@ -1,8 +1,3 @@
-use roxy::{latency::update_latency};
-use tokio::time::{interval, Duration};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::signal;
 use axum::{
     extract::{Request, State},
     http::{HeaderMap, Method, Uri, StatusCode},
@@ -10,94 +5,32 @@ use axum::{
     Router as AxumRouter,
     body::Body,
 };
-use roxy::route::Router;
 use reqwest::{Client, Proxy};
 use dotenvy::dotenv;
 
-// AppState结构
+use crate::route::Router;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
+
 #[derive(Clone)]
-#[allow(dead_code)]
-struct AppState {
-    client: Client,
-    router: Router,
-    is_updating: Arc<AtomicBool>,
+pub struct AppState {
+    pub client: Client,
+    pub router: Router,
+    pub is_updating: Arc<AtomicBool>,
 }
 
-#[tokio::main]
-async fn main() {
-    println!("Starting Roxy Proxy Server with scheduled latency updates...");
-    
-    // 创建一个原子布尔值来控制代理服务的暂停状态
-    let is_updating = Arc::new(AtomicBool::new(false));
-    
-    // 启动代理服务器
-    let is_updating_clone = Arc::clone(&is_updating);
-    let proxy_handle = tokio::spawn(async move {
-        start_proxy_server_with_pause_check(is_updating_clone).await;
-    });
-    
-    // 启动定时延迟更新任务
-    let is_updating_clone = Arc::clone(&is_updating);
-    let update_handle = tokio::spawn(async move {
-        // 等待5分钟后开始第一次更新，然后每15分钟更新一次
-        tokio::time::sleep(Duration::from_secs(300)).await; // 启动后5分钟
-        
-        let mut interval = interval(Duration::from_secs(900)); // 15分钟间隔
-        interval.tick().await; // 跳过第一个立即触发
-        
-        loop {
-            interval.tick().await;
-            
-            println!("=== Starting scheduled latency update ===");
-            
-            // 设置更新标志，暂停代理服务
-            is_updating_clone.store(true, Ordering::SeqCst);
-            println!("Proxy service paused for latency update");
-            
-            // 执行延迟更新
-            update_latency().await;
-            
-            // 清除更新标志，恢复代理服务
-            is_updating_clone.store(false, Ordering::SeqCst);
-            println!("Proxy service resumed");
-            println!("=== Latency update cycle completed ===\n");
-        }
-    });
-    
-    println!("Proxy server and update scheduler started!");
-    println!("- Proxy service: http://0.0.0.0:8080");
-    println!("- First latency update: in 5 minutes");
-    println!("- Update interval: every 15 minutes");
-    println!("- Press Ctrl+C to stop");
-    
-    // 等待Ctrl+C信号
-    tokio::select! {
-        _ = signal::ctrl_c() => {
-            println!("\nShutdown signal received, stopping services...");
-        }
-        _ = proxy_handle => {
-            println!("Proxy server stopped unexpectedly");
-        }
-        _ = update_handle => {
-            println!("Update scheduler stopped unexpectedly");
-        }
-    }
-    
-    println!("Roxy Proxy Server stopped.");
-}
-
-// 修改后的代理服务器启动函数，支持暂停检查
-async fn start_proxy_server_with_pause_check(is_updating: Arc<AtomicBool>) {
+pub async fn start_proxy_server() {
     dotenv().ok();
     
     let state = AppState {
         client: Client::new(),
         router: Router::new(),
-        is_updating: Arc::clone(&is_updating),
+        is_updating: Arc::new(AtomicBool::new(false)),
     };
 
     let app = AxumRouter::new()
-        .fallback(proxy_handler_with_pause_check)
+        .fallback(standard_proxy_handler)  // 简化路由，只用fallback
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")
@@ -114,8 +47,8 @@ async fn start_proxy_server_with_pause_check(is_updating: Arc<AtomicBool>) {
     axum::serve(listener, app).await.unwrap();
 }
 
-// 带暂停检查的代理处理器
-async fn proxy_handler_with_pause_check(
+// 修改 standard_proxy_handler
+async fn standard_proxy_handler(
     State(state): State<AppState>,
     method: Method,
     uri: Uri,
@@ -123,32 +56,22 @@ async fn proxy_handler_with_pause_check(
     request: Request<Body>,
 ) -> Result<Response<Body>, StatusCode> {
     
-    // 检查是否正在更新
-    if state.is_updating.load(Ordering::SeqCst) {
-        println!("Request rejected: Service temporarily unavailable (updating latency)");
-        return Response::builder()
-            .status(StatusCode::SERVICE_UNAVAILABLE)
-            .header("Retry-After", "60")
-            .body(Body::from("Service temporarily unavailable. Please try again in a minute."))
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
-    }
-    
     println!("DEBUG: Received request - Method: {}, URI: {}", method, uri);
     
     // 处理HTTPS CONNECT请求
     if method == Method::CONNECT {
-        return handle_connect_with_pause_check(state, uri).await;
+        return handle_connect(state, uri).await;
     }
     
-    // 从headers和URL路径中解析策略  
+    // 从headers和URL路径中解析策略
     let (strategy, country) = parse_strategy_from_request(&headers, uri.path());
     println!("DEBUG: Final parsed strategy: {}, country: {:?}", strategy, country);
     
-    handle_proxy_request_with_pause_check(state, method, uri, headers, request, strategy, country).await
+    handle_proxy_request(state, method, uri, headers, request, strategy, country).await
 }
 
 // 从headers和URL路径中解析策略
-fn parse_strategy_from_request(headers: &HeaderMap, path: &str) -> (String, Option<String>) {
+pub fn parse_strategy_from_request(headers: &HeaderMap, path: &str) -> (String, Option<String>) {
     // 首先检查URL路径中的策略（兼容旧格式）
     if let Some(strategy_from_path) = parse_strategy_from_path(path) {
         return strategy_from_path;
@@ -177,13 +100,15 @@ fn parse_strategy_from_path(path: &str) -> Option<(String, Option<String>)> {
 }
 
 // 从headers中解析策略
-fn parse_strategy_from_headers(headers: &HeaderMap) -> (String, Option<String>) {
+pub fn parse_strategy_from_headers(headers: &HeaderMap) -> (String, Option<String>) {
     // 检查组合策略头 X-Proxy-Strategy: country/DE 或 X-Proxy-Strategy: binance
     if let Some(strategy_header) = headers.get("X-Proxy-Strategy") {
         if let Ok(strategy_str) = strategy_header.to_str() {
             if let Some((strategy, country)) = strategy_str.split_once('/') {
+                println!("DEBUG: Parsed strategy from header: {}, country: {:?}", strategy, Some(country));
                 return (strategy.to_string(), Some(country.to_string()));
             } else {
+                println!("DEBUG: Parsed strategy from header: {}, country: None", strategy_str);
                 return (strategy_str.to_string(), None);
             }
         }
@@ -192,40 +117,18 @@ fn parse_strategy_from_headers(headers: &HeaderMap) -> (String, Option<String>) 
     // 检查分离的国家头
     if let Some(country_header) = headers.get("X-Proxy-Country") {
         if let Ok(country_str) = country_header.to_str() {
+            println!("DEBUG: Parsed strategy from separate headers: country, country: {:?}", Some(country_str));
             return ("country".to_string(), Some(country_str.to_string()));
         }
     }
     
     // 默认策略
+    println!("DEBUG: Using default strategy: minlatency");
     ("minlatency".to_string(), None)
 }
 
-// 处理HTTPS CONNECT方法
-async fn handle_connect_with_pause_check(
-    state: AppState,
-    uri: Uri,
-) -> Result<Response<Body>, StatusCode> {
-    
-    let host_port = uri.to_string();
-    println!("CONNECT request to: {}", host_port);
-    
-    // 获取最佳代理
-    let proxy_info = state.router.get_best_proxy().await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    
-    println!("Using proxy for CONNECT: {} ({}ms)", proxy_info.url, proxy_info.latency);
-    
-    // 对于CONNECT，我们返回200 Connection established
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("Proxy-agent", "roxy/1.0")
-        .body(Body::empty())
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
-}
-
 // 核心代理处理逻辑
-async fn handle_proxy_request_with_pause_check(
+pub async fn handle_proxy_request(
     state: AppState,
     method: Method,
     uri: Uri,
@@ -331,3 +234,29 @@ async fn handle_proxy_request_with_pause_check(
         .body(Body::from(response_bytes))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
+
+// 处理HTTPS CONNECT方法
+pub async fn handle_connect(
+    state: AppState,
+    uri: Uri,
+) -> Result<Response<Body>, StatusCode> {
+    
+    let host_port = uri.to_string();
+    println!("CONNECT request to: {}", host_port);
+    
+    // 获取最佳代理
+    let proxy_info = state.router.get_best_proxy().await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    
+    println!("Using proxy for CONNECT: {} ({}ms)", proxy_info.url, proxy_info.latency);
+    
+    // 对于CONNECT，我们返回200 Connection established
+    // 实际的隧道建立需要更复杂的实现
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Proxy-agent", "roxy/1.0")
+        .body(Body::empty())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
